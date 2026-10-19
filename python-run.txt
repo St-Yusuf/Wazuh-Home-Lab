@@ -1,0 +1,12 @@
+Terminal output shared after running fetch_alerts.py on the Wazuh server.
+This is a text transcript, not the exported JSON report.
+
+Indexer username [admin]: admin
+Indexer password:
+
+Matching alerts: 1
+Retrieved alerts: 1 (maximum 100)
+
+2026-10-19T10:03:55.197+0000 | agent=ubuntutest | user=erdem | source=192.168.161.1 | rule=100100 | level=10
+
+Report saved: /home/wazuh-user/wazuh-lab/ssh_alert_report.json
