@@ -1,53 +1,53 @@
 # Wazuh Home Lab
 
-I built this lab to learn how a SIEM collects events and turns them into alerts. I wanted to follow an event from the Linux system where it happened to the Wazuh dashboard, and understand why a rule matched.
+A small home lab to learn how a SIEM works. I wanted to follow one event from the Linux machine where it happens to the Wazuh dashboard, and understand why a rule fires.
 
-I started with a failed SSH login and a file change. Then I added my own SSH correlation rule and a small Python script to retrieve its alerts. Everything here was tested on my own virtual machines.
+I started with a failed SSH login and a file change. Then I added my own correlation rule and a small Python script to retrieve its alerts. Everything ran on my own VMs.
 
 **Author:** Erdem Yacel · **Test date:** 19 October 2026
 
-## My setup
+## Setup
 
-| Component | Setup | Purpose |
-| --- | --- | --- |
-| Windows laptop | 16 GB RAM; VMware Workstation Pro | Runs the VMs; used PowerShell for SSH |
-| Wazuh server | Wazuh 4.14.9 all-in-one OVA; 4 vCPU, 8 GB RAM, 50 GB disk; `192.168.161.128` | Manager, indexer and dashboard |
-| Ubuntu server | Ubuntu 24.04.5 LTS; 2 vCPU, 2 GB RAM, 20 GB disk; `192.168.161.129` | Test endpoint, named `ubuntutest` |
-| Wazuh agent | Version 4.14.9; ID `001` | Collects events on Ubuntu |
+| Machine | Details |
+| --- | --- |
+| Windows laptop | 16 GB RAM, VMware Workstation Pro. Runs the VMs, I used PowerShell for SSH |
+| Wazuh server | Wazuh 4.14.9 all-in-one OVA, 4 vCPU, 8 GB RAM, 50 GB disk, `192.168.161.128` |
+| Ubuntu server | Ubuntu 24.04.5 LTS, 2 vCPU, 2 GB RAM, 20 GB disk, `192.168.161.129`, named `ubuntutest` |
+| Wazuh agent | Version 4.14.9, ID `001`, installed on the Ubuntu server |
 
-Both VMs use VMware NAT so they can communicate on the private lab network and download packages. The agent connected to the manager on TCP 1514. The dashboard showed it as active; the following tests confirmed that events were also reaching Wazuh.
+Both VMs use VMware NAT. The dashboard shows the agent as active.
 
 ![Active Ubuntu agent](images/01-agent-active.png)
 
-## 1. Following a failed SSH login
+## 1. Failed SSH login
 
-From Windows, I ran this command and entered one incorrect password:
+From Windows I tried to log in with one wrong password:
 
 ```powershell
 ssh -o PreferredAuthentications=password -o PubkeyAuthentication=no -o NumberOfPasswordPrompts=1 erdem@192.168.161.129
 ```
 
-I checked the original event on Ubuntu with `sudo journalctl -u ssh --since "5 minutes ago" --no-pager`.
+On Ubuntu I checked the original log with `sudo journalctl -u ssh --since "5 minutes ago" --no-pager`.
 
-![Original SSH journal records](images/02-ssh-source-log.png)
+![SSH journal](images/02-ssh-source-log.png)
 
-The agent collected the event from journald. Wazuh decoded it as an sshd event and generated rule **5760**, level **5**, for the rejected password. The affected account was `erdem` on `ubuntutest`; the source address was `192.168.161.1`.
+Wazuh collected it from journald, decoded it as sshd and raised rule **5760** (level 5). The user was `erdem` and the source was `192.168.161.1`, the source address recorded for my Windows SSH attempt.
 
 ![SSH alerts filtered by source IP](images/03-ssh-alerts.png)
 
-One attempt produced three related alerts: PAM failure (`5503`), SSH authentication failure (`5760`), and connection reset (`5762`). I learned to read the underlying records rather than treat each alert as a separate login attempt.
+This one attempt created three alerts: PAM failure (`5503`), SSH authentication failure (`5760`) and connection reset (`5762`). So the number of alerts is not the number of login attempts.
 
-If this were unexpected, I would identify the source system, look for repeated attempts against other accounts, and check for a successful login afterward. A single rejected password does not establish an attack.
+If this was not my own test, I would check who owns the source IP, look for attempts on other accounts and check for a successful login afterwards. One failed login alone is not enough to tell whether it was a mistake or an attack.
 
-## 2. Detecting a file change
+## 2. File change (FIM)
 
-I created `/opt/wazuh-lab/test.conf` containing `version=1`. Inside the existing `<syscheck>` section of the Ubuntu agent configuration, I added:
+I created `/opt/wazuh-lab/test.conf` with the text `version=1`. In the `<syscheck>` section of the agent config I added:
 
 ```xml
 <directories check_all="yes" realtime="yes" report_changes="yes">/opt/wazuh-lab</directories>
 ```
 
-I backed up the configuration, checked it with `sudo /var/ossec/bin/wazuh-syscheckd -t`, and restarted the agent. Its log confirmed that the initial scan had finished and real-time monitoring had started. I then changed the file:
+I made a backup of the config, tested it with `sudo /var/ossec/bin/wazuh-syscheckd -t` and restarted the agent. The agent log showed that the first scan was done and real-time monitoring had started. Then I changed the file:
 
 ```bash
 echo 'version=2' | sudo tee /opt/wazuh-lab/test.conf
@@ -55,63 +55,66 @@ echo 'version=2' | sudo tee /opt/wazuh-lab/test.conf
 
 ![File integrity alert](images/04-fim-alert.png)
 
-Wazuh generated rule **550**, level **7**, with the description `Integrity checksum changed.` It reported changed modification time and content hashes, and showed the exact text difference:
+Wazuh raised rule **550** (level 7, `Integrity checksum changed.`) and showed the changed hashes and the exact difference.
 
-![Content difference and hashes](images/05-fim-diff.png)
+![Difference and hashes](images/05-fim-diff.png)
 
-Both versions were 10 bytes including the newline, so the change was detected even though the file size stayed the same. The reported owner was `root`, but ownership does not identify who edited the file. For an unexplained change, I would check whether it was authorized and correlate sudo or audit records. I did not enable who-data attribution in this lab.
+Both versions are 10 bytes, so it caught a content change even though the size stayed the same. The alert shows the owner `root`, but that does not tell me who edited the file. I did not turn on who-data in this lab. In a real case I would look at sudo and audit logs.
 
-## 3. Writing and testing a detection rule
+## 3. My own rule
 
-I added [rule 100100](rules/ssh-correlation.xml) to the manager's `/var/ossec/etc/rules/local_rules.xml`, keeping the existing example rule. It looks for **five SSH password failures from the same source IP within 120 seconds**, on the same agent by default. It correlates rule `5760`, so the related PAM and connection-reset records are not counted as extra password failures. It does not require the target username to stay the same.
+I added [rule 100100](rules/ssh-correlation.xml) to `/var/ossec/etc/rules/local_rules.xml` on the Wazuh server. It fires at level 10 when the same source IP has **5 SSH password failures within 120 seconds**. It is based on rule `5760`, so the PAM and connection-reset alerts are not counted. It does not check the username.
 
-I validated the configuration with `sudo /var/ossec/bin/wazuh-analysisd -t`. In one `wazuh-logtest` session, the first four sample events matched `5760`; the fifth matched my rule `100100` at level **10**.
+I checked the config with `sudo /var/ossec/bin/wazuh-analysisd -t`. In `wazuh-logtest` the first four sample events matched `5760` and the fifth matched `100100`. Then I restarted the manager and made five real wrong-password attempts.
 
-After restarting `wazuh-manager`, I made five real SSH attempts with incorrect passwords. The dashboard showed the custom alert:
+![Custom rule alert](images/06-custom-rule-alert.png)
 
-![Custom rule found in Threat Hunting](images/06-custom-rule-alert.png)
+The alert lists four earlier failures (10:03:10, 10:03:25, 10:03:35, 10:03:45 UTC) and the fifth one at 10:03:55 UTC. That is five failures in 45 seconds.
 
-The alert's `previous_output` contained four failures at **10:03:10, 10:03:25, 10:03:35 and 10:03:45 UTC**. The current event was at **10:03:55 UTC**: five failures in **45 seconds**. Source: `192.168.161.1`; target account: `erdem`; endpoint: `ubuntutest`.
+![Four earlier events and the fifth](images/07-custom-rule-details.png)
 
-![Four previous events and the fifth triggering event](images/07-custom-rule-details.png)
+This was my own test. Level 10 is just my choice for priority, it does not prove anything bad happened.
 
-This was an intentional test. In a real investigation, I would check whether the source was expected, how widely it was trying accounts, and whether any attempt succeeded. The higher rule level is a prioritization choice, not proof of compromise.
+## 4. Python script
 
-## 4. Retrieving alerts with Python
+[fetch_alerts.py](scripts/fetch_alerts.py) uses only the standard library. It asks the Wazuh Indexer API for rule `100100` alerts from agent `001`, prints a short summary and saves the result as JSON. It is the same search I did by hand in the dashboard.
 
-I wrote [fetch_alerts.py](scripts/fetch_alerts.py) using Python's standard library. It queries the **Wazuh Indexer API**, filters for agent `001` and rule `100100`, prints a short summary, and saves the returned alerts to JSON. This automates a small reporting task I had previously done in the dashboard.
+I ran it on the Wazuh server, because the indexer listens on `127.0.0.1:9200`. It checks the TLS certificate with the lab CA and asks for the password with `getpass`, so no password is saved.
 
-I ran it on the Wazuh server because the indexer listens on `127.0.0.1:9200`. Its certificate includes that IP. The script verifies the certificate using the lab CA, asks for the password with `getpass`, and does not save credentials. It has a 20-second timeout and rejects searches reporting timeouts or failed shards.
-
-To run it on this lab server, put the script in `~/wazuh-lab`, then:
+Run these commands on the Wazuh server, from the repository root directory:
 
 ```bash
+mkdir -p ~/wazuh-lab
+cp scripts/fetch_alerts.py ~/wazuh-lab/
 sudo install -m 644 /etc/wazuh-indexer/certs/root-ca.pem ~/wazuh-lab/root-ca.pem
 cd ~/wazuh-lab
 python3 fetch_alerts.py
 ```
 
-The CA certificate is public; private keys are not needed. Neither certificates nor credentials are included in this repository.
+It found one alert, with the same time, source, rule and level as the dashboard. The terminal output is in [evidence/python-run.txt](evidence/python-run.txt). Certificates, passwords and the JSON report are not in this repo.
 
-My run retrieved **one alert**, matching the dashboard's timestamp, endpoint, source, rule and level. The [terminal output](evidence/python-run.txt) is included as a text transcript. The complete JSON report was saved on my VM; it is not included here.
+Limits: I run it by hand, it only gets the latest 100 matches, the agent ID and rule ID are written in the code, and I used the admin account. A read-only account would be better.
 
-The script retrieves the latest **100** matches across all available alert indices and overwrites `ssh_alert_report.json` each run. It is run manually, not scheduled. I tested it with the lab admin account; a dedicated read-only account would be a useful next improvement.
+## Problems I ran into
 
-## What I learned
+- **Root disk full.** The virtual disk was 50 GB but the root partition was only 25 GB and 100% full. I checked `df` and `lsblk`, then grew the partition with `growpart` and the XFS filesystem with `xfs_growfs`. About 25 GB became free.
+- **OVA did not boot on my Ryzen laptop.** The AMD workaround from the Wazuh documentation fixed it.
+- **Time zones.** Ubuntu logs use UTC and the dashboard shows UTC+2. For example `10:03:55` UTC shows as `12:03:55` in the dashboard.
 
-- An active agent is only the first check; generating an event and finding its alert verifies collection and detection together.
-- Alert counts and login-attempt counts can be different.
-- Correlation rules add context by connecting several events over time.
-- File ownership and MITRE mappings do not, on their own, establish an actor or malicious intent.
-- A small script can turn a manual investigation query into a repeatable report.
+## What I took from it
 
-I also had to troubleshoot a full root filesystem: the virtual disk was 50 GB but the root partition was only 25 GB. After checking the layout, I expanded the partition and XFS filesystem; free space increased to about 25 GB. The OVA also needed Wazuh's documented VMware AMD boot workaround on my Ryzen laptop.
-
-Ubuntu records used UTC while the dashboard displayed UTC+2. For example, the custom alarm at `10:03:55.197 UTC` appeared as `12:03:55.197` in the dashboard.
+- An active agent is only the first check. Making an event and finding its alert shows that collection and detection both work.
+- Alerts and login attempts are not the same thing.
+- A correlation rule connects several events over time.
+- A small script can repeat a search I did by hand.
 
 ## Scope
 
-This is a single-endpoint student lab. I tested log collection, alert investigation, FIM, one custom correlation rule, and Python alert reporting. I have not tested production scale, automatic blocking, or scheduled reporting. The seven screenshots are original captures from these tests.
+One endpoint, built-in rules plus one custom rule. I did not test production scale, automatic blocking or scheduled reports.
+
+## AI use
+
+I used AI assistance for setup guidance, the custom rule, the Python script, and this README. I ran the commands and tests on my own VMs and took the screenshots myself.
 
 ## References
 
