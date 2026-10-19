@@ -1,6 +1,6 @@
 # Wazuh Home Lab
 
-A small home lab to learn how a SIEM works. I wanted to follow one event from the Linux machine where it happens to the Wazuh dashboard, and understand why a rule fires.
+A small home lab to learn how a SIEM works. I wanted to follow one event from the Linux machine where it happens to the Wazuh dashboard and understand why a rule fires.
 
 I started with a failed SSH login and a file change. Then I added my own correlation rule and a small Python script to retrieve its alerts. Everything ran on my own VMs.
 
@@ -59,7 +59,7 @@ Wazuh raised rule **550** (level 7, `Integrity checksum changed.`) and showed th
 
 ![Difference and hashes](images/05-fim-diff.png)
 
-Both versions are 10 bytes, so it caught a content change even though the size stayed the same. The alert shows the owner `root`, but that does not tell me who edited the file. I did not turn on who-data in this lab. In a real case I would look at sudo and audit logs.
+Both versions are 10 bytes so it caught a content change even though the size stayed the same. The alert shows the owner `root` but that does not tell me who edited the file. I did not turn on who-data in this lab. In a real case I would look at sudo and audit logs.
 
 ## 3. My own rule
 
@@ -93,7 +93,7 @@ python3 fetch_alerts.py
 
 It found one alert, with the same time, source, rule and level as the dashboard. The terminal output is in [evidence/python-run.txt](evidence/python-run.txt). Certificates, passwords and the JSON report are not in this repo.
 
-Limits: I run it by hand, it only gets the latest 100 matches, the agent ID and rule ID are written in the code, and I used the admin account. A read-only account would be better.
+Limits: I run it by hand, it only gets the latest 100 matches, the agent ID and rule ID are written in the code and I used the admin account. A read-only account would be better.
 
 ## Problems I ran into
 
@@ -114,7 +114,7 @@ One endpoint, built-in rules plus one custom rule. I did not test production sca
 
 ## AI use
 
-I used AI assistance for setup guidance, the custom rule, the Python script, and this README. I ran the commands and tests on my own VMs and took the screenshots myself.
+I used AI assistance for setup guidance, the custom rule, the Python script. I ran the commands, analyses and tests on my own VMs and took the screenshots myself.
 
 ## References
 
